@@ -29,11 +29,22 @@
     color: rgba(255,255,255,0.5); font-size: 4.5vw; font-weight: 600;
     pointer-events: none; z-index: 10;
   }
+  #lives {
+    position: fixed; top: 9%; left: 0; right: 0; text-align: center;
+    font-size: 5vw; letter-spacing: 0.2em; pointer-events: none; z-index: 10;
+  }
+  #gameover {
+    position: fixed; top: 38%; left: 0; right: 0; text-align: center;
+    color: #ff8f6b; font-weight: 800; font-size: 9vw; letter-spacing: 0.1em;
+    pointer-events: none; z-index: 11; opacity: 0; text-shadow: 0 0 20px rgba(255,100,60,0.6);
+  }
 </style>
 </head>
 <body>
 <div id="label">SATELLITES</div>
+<div id="lives"></div>
 <div id="score">0</div>
+<div id="gameover">GAME OVER</div>
 <div id="hint">TAP TO LAUNCH</div>
 <canvas id="c"></canvas>
 <script>
@@ -42,6 +53,8 @@
   var ctx = canvas.getContext('2d');
   var scoreEl = document.getElementById('score');
   var hintEl = document.getElementById('hint');
+  var livesEl = document.getElementById('lives');
+  var gameoverEl = document.getElementById('gameover');
 
   var W = 0, H = 0, cx = 0, cy = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
   function resize() {
@@ -83,9 +96,53 @@
   var score = 0;
   var running = true;
   var t = 0;
+  var MAX_LIVES = 3;
+  var lives = MAX_LIVES;
+  var state = 'playing'; // 'playing' | 'gameover'
+  var flashAlpha = 0;
 
   var BASE_R = 46;
   var ORBIT_GAP = 26;
+
+  function renderLives() {
+    var s = '';
+    for (var i = 0; i < MAX_LIVES; i++) {
+      s += i < lives ? '●' : '○';
+      if (i < MAX_LIVES - 1) s += ' ';
+    }
+    livesEl.innerHTML = s;
+    livesEl.style.color = lives <= 1 ? '#ff8f6b' : 'rgba(255,255,255,0.6)';
+  }
+
+  function miss() {
+    lives -= 1;
+    flashAlpha = 0.35;
+    beep(120, 0.25, 'sawtooth', 0.14);
+    renderLives();
+    if (lives <= 0) triggerGameOver();
+  }
+
+  function triggerGameOver() {
+    state = 'gameover';
+    gameoverEl.style.opacity = '1';
+    hintEl.textContent = 'FINAL ' + score + ' — TAP TO RESTART';
+    hintEl.style.opacity = '1';
+  }
+
+  function restart() {
+    satellites = [];
+    debris = [];
+    particles = [];
+    score = 0;
+    lives = MAX_LIVES;
+    t = 0;
+    scoreEl.textContent = '0';
+    gameoverEl.style.opacity = '0';
+    hintEl.textContent = 'TAP TO LAUNCH';
+    hintEl.style.opacity = '1';
+    renderLives();
+    state = 'playing';
+  }
 
   function addSatellite() {
     ensureAudio();
@@ -117,6 +174,8 @@
   var particles = []; // simple collect-burst particles
 
   function update(dt) {
+    if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt * 1.2);
+    if (state !== 'playing') return;
     t += dt;
     spawnTimer += dt;
     var spawnInterval = Math.max(0.35, 1.1 - satellites.length * 0.03);
@@ -150,12 +209,15 @@
           break;
         }
       }
-      if (collected || dist < 18) {
+      if (collected) {
         debris.splice(d, 1);
         score += 1;
         scoreEl.textContent = score;
         beep(760 + Math.random() * 120, 0.09, 'sine', 0.08);
         particles.push({ x: deb.x, y: deb.y, life: 0.35, r: 3 });
+      } else if (dist < 18) {
+        debris.splice(d, 1);
+        miss();
       }
     }
 
@@ -227,6 +289,11 @@
       ctx.arc(pt.x, pt.y, pt.r, 0, Math.PI * 2);
       ctx.stroke();
     }
+
+    if (flashAlpha > 0) {
+      ctx.fillStyle = 'rgba(255,60,40,' + flashAlpha + ')';
+      ctx.fillRect(0, 0, W, H);
+    }
   }
 
   var lastTime = null;
@@ -242,13 +309,21 @@
 
   function onTap(e) {
     e.preventDefault();
+    if (state === 'gameover') {
+      ensureAudio();
+      restart();
+      return;
+    }
     addSatellite();
   }
   canvas.addEventListener('pointerdown', onTap, { passive: false });
 
-  window.__GAME = { score: 0, state: 'playing' };
-  var origScoreSetter = function () { window.__GAME.score = score; window.__GAME.state = 'playing'; };
-  setInterval(origScoreSetter, 200);
+  renderLives();
+  window.__GAME = { score: 0, state: state };
+  setInterval(function () {
+    window.__GAME.score = score;
+    window.__GAME.state = state;
+  }, 200);
 
   requestAnimationFrame(loop);
 })();
