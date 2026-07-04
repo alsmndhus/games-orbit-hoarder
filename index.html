@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>ORBIT HOARDER</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #05060f; overflow: hidden; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #score {
+    position: fixed; top: 6%; left: 0; right: 0; text-align: center;
+    color: #fff; font-weight: 800; font-size: 22vw; line-height: 1;
+    text-shadow: 0 0 20px rgba(120,180,255,0.8), 0 0 40px rgba(120,180,255,0.4);
+    pointer-events: none; z-index: 10;
+    font-variant-numeric: tabular-nums;
+  }
+  #label {
+    position: fixed; top: 3%; left: 0; right: 0; text-align: center;
+    color: rgba(255,255,255,0.55); font-weight: 600; font-size: 4vw;
+    letter-spacing: 0.3em; pointer-events: none; z-index: 10;
+  }
+  #hint {
+    position: fixed; bottom: 6%; left: 0; right: 0; text-align: center;
+    color: rgba(255,255,255,0.5); font-size: 4.5vw; font-weight: 600;
+    pointer-events: none; z-index: 10;
+  }
+</style>
+</head>
+<body>
+<div id="label">SATELLITES</div>
+<div id="score">0</div>
+<div id="hint">TAP TO LAUNCH</div>
+<canvas id="c"></canvas>
+<script>
+(function () {
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d');
+  var scoreEl = document.getElementById('score');
+  var hintEl = document.getElementById('hint');
+
+  var W = 0, H = 0, cx = 0, cy = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    cx = W / 2; cy = H / 2;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- WebAudio synth: short blip on collect, launch pluck on tap ----
+  var actx = null;
+  function ensureAudio() {
+    if (!actx) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) actx = new AC();
+    }
+    if (actx && actx.state === 'suspended') actx.resume();
+  }
+  function beep(freq, dur, type, gain) {
+    if (!actx) return;
+    var t0 = actx.currentTime;
+    var osc = actx.createOscillator();
+    var g = actx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(gain != null ? gain : 0.15, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(g); g.connect(actx.destination);
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+  }
+
+  // ---- state ----
+  var satellites = []; // {orbitR, angle, speed, size}
+  var debris = [];     // {x, y, r, vAngle}
+  var score = 0;
+  var running = true;
+  var t = 0;
+
+  var BASE_R = 46;
+  var ORBIT_GAP = 26;
+
+  function addSatellite() {
+    ensureAudio();
+    var idx = satellites.length;
+    satellites.push({
+      orbitR: BASE_R + idx * ORBIT_GAP + (idx % 3) * 6,
+      angle: Math.random() * Math.PI * 2,
+      speed: 0.014 + (idx % 4) * 0.003,
+      size: 7
+    });
+    beep(420 + idx * 18, 0.12, 'triangle', 0.12);
+    hintEl.style.opacity = '0';
+  }
+
+  function spawnDebris() {
+    var minDim = Math.min(W, H);
+    var maxR = minDim * 0.46;
+    var edgeR = maxR + 20 + Math.random() * 30;
+    var a = Math.random() * Math.PI * 2;
+    debris.push({
+      x: cx + Math.cos(a) * edgeR,
+      y: cy + Math.sin(a) * edgeR,
+      angle: a,
+      r: 4 + Math.random() * 3
+    });
+  }
+
+  var spawnTimer = 0;
+  var particles = []; // simple collect-burst particles
+
+  function update(dt) {
+    t += dt;
+    spawnTimer += dt;
+    var spawnInterval = Math.max(0.35, 1.1 - satellites.length * 0.03);
+    if (spawnTimer > spawnInterval) {
+      spawnTimer = 0;
+      spawnDebris();
+    }
+
+    for (var i = 0; i < satellites.length; i++) {
+      satellites[i].angle += satellites[i].speed;
+    }
+
+    for (var d = debris.length - 1; d >= 0; d--) {
+      var deb = debris[d];
+      // pull debris slowly inward toward center
+      var dx = cx - deb.x, dy = cy - deb.y;
+      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      deb.x += (dx / dist) * 22 * dt;
+      deb.y += (dy / dist) * 22 * dt;
+
+      // check collision vs each satellite position
+      var collected = false;
+      for (var s = 0; s < satellites.length; s++) {
+        var sat = satellites[s];
+        var sx = cx + Math.cos(sat.angle) * sat.orbitR;
+        var sy = cy + Math.sin(sat.angle) * sat.orbitR;
+        var ddx = sx - deb.x, ddy = sy - deb.y;
+        var dd = Math.sqrt(ddx * ddx + ddy * ddy);
+        if (dd < sat.size + deb.r + 6) {
+          collected = true;
+          break;
+        }
+      }
+      if (collected || dist < 18) {
+        debris.splice(d, 1);
+        score += 1;
+        scoreEl.textContent = score;
+        beep(760 + Math.random() * 120, 0.09, 'sine', 0.08);
+        particles.push({ x: deb.x, y: deb.y, life: 0.35, r: 3 });
+      }
+    }
+
+    for (var p = particles.length - 1; p >= 0; p--) {
+      particles[p].life -= dt;
+      particles[p].r += dt * 30;
+      if (particles[p].life <= 0) particles.splice(p, 1);
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // orbit rings
+    ctx.strokeStyle = 'rgba(120,160,255,0.15)';
+    ctx.lineWidth = 1;
+    for (var i = 0; i < satellites.length; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, satellites[i].orbitR, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // core
+    var pulse = 1 + Math.sin(t * 2) * 0.05;
+    var coreR = 16 * pulse;
+    var grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR * 3);
+    grad.addColorStop(0, 'rgba(150,200,255,0.9)');
+    grad.addColorStop(1, 'rgba(150,200,255,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, coreR * 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#dff0ff';
+    ctx.beginPath();
+    ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // debris
+    ctx.fillStyle = '#ff8f6b';
+    for (var d = 0; d < debris.length; d++) {
+      var deb = debris[d];
+      ctx.beginPath();
+      ctx.arc(deb.x, deb.y, deb.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // satellites
+    for (var s = 0; s < satellites.length; s++) {
+      var sat = satellites[s];
+      var sx = cx + Math.cos(sat.angle) * sat.orbitR;
+      var sy = cy + Math.sin(sat.angle) * sat.orbitR;
+      ctx.fillStyle = '#9fe3ff';
+      ctx.beginPath();
+      ctx.arc(sx, sy, sat.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(159,227,255,0.5)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sat.size + 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // collect particles
+    for (var p = 0; p < particles.length; p++) {
+      var pt = particles[p];
+      ctx.strokeStyle = 'rgba(255,220,180,' + Math.max(0, pt.life / 0.35) + ')';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, pt.r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  var lastTime = null;
+  function loop(now) {
+    if (!running) return;
+    if (lastTime == null) lastTime = now;
+    var dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function onTap(e) {
+    e.preventDefault();
+    addSatellite();
+  }
+  canvas.addEventListener('pointerdown', onTap, { passive: false });
+
+  window.__GAME = { score: 0, state: 'playing' };
+  var origScoreSetter = function () { window.__GAME.score = score; window.__GAME.state = 'playing'; };
+  setInterval(origScoreSetter, 200);
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
