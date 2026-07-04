@@ -9,6 +9,7 @@
     margin: 0; padding: 0; width: 100%; height: 100%;
     background: #05060f; overflow: hidden; touch-action: none;
     -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
   #c { display: block; width: 100vw; height: 100vh; }
@@ -57,7 +58,8 @@
   var livesEl = document.getElementById('lives');
   var gameoverEl = document.getElementById('gameover');
 
-  var W = 0, H = 0, cx = 0, cy = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
+  // cap DPR at 2 so low-end phones don't push a huge backing canvas every frame
+  var W = 0, H = 0, cx = 0, cy = 0, DPR = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
   function resize() {
     W = window.innerWidth; H = window.innerHeight;
     canvas.width = W * DPR; canvas.height = H * DPR;
@@ -66,6 +68,7 @@
     cx = W / 2; cy = H / 2;
   }
   window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', resize);
   resize();
 
   // technique from sasha240100/between.js (mit) - tiny tween helper serviced by the rAF loop
@@ -373,6 +376,7 @@
   }
 
   var lastTime = null;
+  var rafId = null;
   function loop(now) {
     if (!running) return;
     if (lastTime == null) lastTime = now;
@@ -380,19 +384,40 @@
     lastTime = now;
     update(dt);
     draw();
-    requestAnimationFrame(loop);
+    rafId = requestAnimationFrame(loop);
   }
 
+  // pause the rAF loop when backgrounded: saves battery on mobile and avoids
+  // a stale lastTime producing a jump on return (dt is reset, not just clamped)
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      if (rafId != null) cancelAnimationFrame(rafId);
+      rafId = null;
+    } else if (rafId == null) {
+      lastTime = null;
+      rafId = requestAnimationFrame(loop);
+    }
+  });
+
+  var activePointerId = null;
   function onTap(e) {
     e.preventDefault();
+    // ignore extra fingers so a two-finger tap doesn't double-fire on mobile
+    if (activePointerId != null) return;
+    activePointerId = e.pointerId;
     if (state === 'gameover') {
       ensureAudio();
       restart();
-      return;
+    } else {
+      addSatellite();
     }
-    addSatellite();
+  }
+  function onRelease(e) {
+    if (e.pointerId === activePointerId) activePointerId = null;
   }
   canvas.addEventListener('pointerdown', onTap, { passive: false });
+  canvas.addEventListener('pointerup', onRelease, { passive: false });
+  canvas.addEventListener('pointercancel', onRelease, { passive: false });
 
   renderLives();
   window.__GAME = { score: 0, state: state };
@@ -401,7 +426,7 @@
     window.__GAME.state = state;
   }, 200);
 
-  requestAnimationFrame(loop);
+  rafId = requestAnimationFrame(loop);
 })();
 </script>
 </body>
