@@ -40,6 +40,12 @@
     color: #ff8f6b; font-weight: 800; font-size: 9vw; letter-spacing: 0.1em;
     pointer-events: none; z-index: 11; opacity: 0; text-shadow: 0 0 20px rgba(255,100,60,0.6);
   }
+  #energy {
+    position: fixed; bottom: 12%; left: 0; right: 0; text-align: center;
+    color: #7fd3ff; font-weight: 700; font-size: 4.4vw; letter-spacing: 0.12em;
+    pointer-events: none; z-index: 10; font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 14px rgba(120,180,255,0.5);
+  }
 </style>
 </head>
 <body>
@@ -47,7 +53,8 @@
 <div id="lives"></div>
 <div id="score">0</div>
 <div id="gameover">GAME OVER</div>
-<div id="hint">TAP TO LAUNCH</div>
+<div id="energy"></div>
+<div id="hint">TAP TO PLACE A SATELLITE</div>
 <canvas id="c"></canvas>
 <script>
 (function () {
@@ -57,6 +64,7 @@
   var hintEl = document.getElementById('hint');
   var livesEl = document.getElementById('lives');
   var gameoverEl = document.getElementById('gameover');
+  var energyEl = document.getElementById('energy');
 
   // cap DPR at 2 so low-end phones don't push a huge backing canvas every frame
   var W = 0, H = 0, cx = 0, cy = 0, DPR = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
@@ -143,6 +151,16 @@
   var state = 'playing'; // 'playing' | 'gameover'
   var flashAlpha = 0;
 
+  // ---- energy (터치 무제한 방지: 발사에 에너지 소모) ----
+  var START_ENERGY = 3, ENERGY_MAX = 12, LOW_ENERGY = 4;
+  var energy = START_ENERGY;
+  var regenTimer = 0;
+  function launchCost() { return 1 + Math.floor(satellites.length / 2); } // 1,1,2,2,3,3...
+  function renderEnergy() {
+    energyEl.textContent = '⚡ ' + Math.floor(energy) + '   ·   NEXT ' + launchCost();
+    energyEl.style.color = energy < launchCost() ? '#ff8f6b' : '#7fd3ff';
+  }
+
   var BASE_R = 46;
   var ORBIT_GAP = 26;
 
@@ -193,22 +211,31 @@
     scoreEl.style.transform = 'scale(1)';
     score = 0;
     lives = MAX_LIVES;
+    energy = START_ENERGY;
+    regenTimer = 0;
     t = 0;
     scoreEl.textContent = '0';
     gameoverEl.style.opacity = '0';
-    hintEl.textContent = 'TAP TO LAUNCH';
+    hintEl.textContent = 'TAP TO PLACE A SATELLITE';
     hintEl.style.opacity = '1';
     renderLives();
+    renderEnergy();
     state = 'playing';
   }
 
-  function addSatellite() {
+  // 탭한 위치가 위성의 궤도 반지름과 시작 각도를 결정한다 (운 아니라 조준).
+  function addSatellite(tx, ty) {
     ensureAudio();
     var idx = satellites.length;
+    var dx = tx - cx, dy = ty - cy;
+    var d = Math.sqrt(dx * dx + dy * dy) || 1;
+    var minR = BASE_R, maxOrbit = Math.min(W, H) * 0.5 - 16;
+    var orbitR = Math.max(minR, Math.min(maxOrbit, d));   // 탭 거리 = 궤도 크기
+    var angle = Math.atan2(dy, dx);                        // 탭 방향 = 시작 위치
     satellites.push({
-      orbitR: BASE_R + idx * ORBIT_GAP + (idx % 3) * 6,
-      angle: Math.random() * Math.PI * 2,
-      speed: 0.014 + (idx % 4) * 0.003,
+      orbitR: orbitR,
+      angle: angle,
+      speed: (0.02 + (idx % 4) * 0.003) * (BASE_R / orbitR + 0.6), // 안쪽 궤도가 더 빠름(일관된 각속도감)
       size: 7
     });
     synth(420 + idx * 18, { type: 'triangle', attack: 0.004, decay: 0.06, sustain: 0.3, release: 0.1, gain: 0.14 });
@@ -237,6 +264,11 @@
     scoreEl.style.transform = 'scale(' + scorePop.scale + ')';
     if (state !== 'playing') return;
     t += dt;
+    // 에너지가 낮을 때만 서서히 회복 (완전히 막히지 않되, 놀면서 최대치로 못 채움)
+    if (energy < LOW_ENERGY) {
+      regenTimer += dt;
+      if (regenTimer > 2.5) { regenTimer = 0; energy = Math.min(ENERGY_MAX, energy + 1); renderEnergy(); }
+    }
     spawnTimer += dt;
     var spawnInterval = Math.max(0.35, 1.1 - satellites.length * 0.03);
     if (spawnTimer > spawnInterval) {
@@ -273,6 +305,8 @@
         debris.splice(d, 1);
         score += 1;
         scoreEl.textContent = score;
+        energy = Math.min(ENERGY_MAX, energy + 1);  // 파편 수집 = 에너지 획득 (수집 루프 = 발사 자원)
+        renderEnergy();
         popScore();
         synth(760 + Math.random() * 120, { type: 'sine', attack: 0.002, decay: 0.05, sustain: 0.3, release: 0.08, gain: 0.1 });
         var burstCount = 5;
@@ -409,7 +443,19 @@
       ensureAudio();
       restart();
     } else {
-      addSatellite();
+      var rect = canvas.getBoundingClientRect();
+      var tx = e.clientX - rect.left, ty = e.clientY - rect.top;
+      var cost = launchCost();
+      if (energy >= cost) {
+        addSatellite(tx, ty);
+        energy -= cost;
+        renderEnergy();
+      } else {
+        // 에너지 부족: 발사 거부 (무제한 탭 차단)
+        ensureAudio();
+        triggerShake(5, 0.18);
+        synth(180, { type: 'square', freqEnd: 120, attack: 0.002, decay: 0.05, sustain: 0.2, release: 0.06, gain: 0.08 });
+      }
     }
   }
   function onRelease(e) {
@@ -420,10 +466,12 @@
   canvas.addEventListener('pointercancel', onRelease, { passive: false });
 
   renderLives();
-  window.__GAME = { score: 0, state: state };
+  renderEnergy();
+  window.__GAME = { score: 0, state: state, energy: energy };
   setInterval(function () {
     window.__GAME.score = score;
     window.__GAME.state = state;
+    window.__GAME.energy = energy;
   }, 200);
 
   rafId = requestAnimationFrame(loop);
